@@ -1,0 +1,45 @@
+# ── RAG Pipeline Requirements ──────────────────────────────────────────────
+# Mix: A2 (LangChain loaders) + B2 (LangChain splitters) + C3 (OpenAI embed)
+#      D2 (LangChain metadata) + E1 (native psycopg2 pgvector) + F1 (FastAPI)
+
+# LangChain core
+langchain==0.3.25
+langchain-community==0.3.23
+langchain-openai==0.3.18
+langchain-text-splitters==0.3.8
+
+# Document loaders (A2)
+unstructured==0.17.2           # PDF, DOCX, PPTX, HTML, TXT universal loader
+pypdf==5.4.0                   # PDF parsing backend for LangChain PyPDFLoader
+python-docx==1.1.2             # DOCX support
+openpyxl==3.1.5                # XLSX support
+pandas==2.2.3                  # CSV / Excel tabular loading
+python-pptx==1.0.2             # PPTX support
+
+# OpenAI embeddings (C3)
+openai==1.77.0
+
+# PostgreSQL + pgvector (E1)
+psycopg2-binary==2.9.10        # Native PostgreSQL driver
+pgvector==0.4.1                # pgvector Python adapter (register_vector)
+
+# FastAPI server (F1)
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20       # For file upload endpoints
+
+# Utilities
+pydantic==2.11.4               # Data validation (FastAPI models)
+pydantic-settings==2.9.1       # Settings / env management
+python-dotenv==1.1.0           # Load .env variables
+tiktoken==0.9.0                # Token counting (chunk size awareness)
+tenacity==9.1.2                # Retry logic for OpenAI calls
+tqdm==4.67.1                   # Progress bars in ingestion loops
+
+# Reranking
+flashrank==0.2.10              # Lightweight cross-encoder reranker (ONNX, no torchvision)
+
+# Logging
+colorlog==6.9.0                # Coloured console logging
+
+ollama==0.6.1
