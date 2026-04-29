@@ -32,11 +32,11 @@ RERANK_MODEL = os.getenv("RERANK_MODEL", "ms-marco-MiniLM-L-12-v2")
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # ----------------------------
-# EMBEDDING  (Ollama local)
+# EMBEDDING  (OpenAI — must match 1536-dim vectors stored in DB)
 # ----------------------------
 def get_embedding(text: str) -> List[float]:
-    response = ollama.embeddings(model=OLLAMA_MODEL, prompt=text)
-    return response["embedding"]
+    response = openai_client.embeddings.create(input=text, model="text-embedding-3-small")
+    return response.data[0].embedding
 
 # ----------------------------
 # RETRIEVE
@@ -47,15 +47,27 @@ def retrieve(query_vec):
     cur = conn.cursor()
     cur.execute("SET enable_seqscan = off;")
     cur.execute("SET hnsw.ef_search = 50;")
+    # fetch extra rows to absorb duplicates after dedup
+    fetch_k = TOP_K * 3
     cur.execute(f"""
-        SELECT content, metadata, embedding <=> %s::vector AS score
+        SELECT content, source, file_name, doc_category, chunk_index,
+               embedding <=> %s::vector AS score
         FROM {TABLE}
         ORDER BY embedding <=> %s::vector
-        LIMIT {TOP_K};
+        LIMIT {fetch_k};
     """, (query_vec, query_vec))
-    results = cur.fetchall()
+    rows = cur.fetchall()
     cur.close()
     conn.close()
+    # deduplicate by content; build (content, metadata, score) tuples
+    seen, results = set(), []
+    for content, source, file_name, doc_category, chunk_index, score in rows:
+        if content not in seen:
+            seen.add(content)
+            metadata = {"source": source or file_name or "", "page": chunk_index, "category": doc_category}
+            results.append((content, metadata, score))
+        if len(results) == TOP_K:
+            break
     return results
 
 # ----------------------------
@@ -73,13 +85,14 @@ def rerank(query: str, chunks: list) -> list:
 # ----------------------------
 def build_prompt(chunks):
     context = "\n\n".join(
-        f"[score={round(c[2],3)} | {c[1]}]\n{c[0]}" for c in chunks
+        f"[Chunk {i+1} | page={c[1].get('page','?')}]\n{c[0]}"
+        for i, c in enumerate(chunks)
     )
-    return f"""
-Answer using ONLY the context below.
-If unsure, say you don't know.
+    return f"""You are an expert SAP consultant. Always answer using the reference material below.
+Synthesize information across all chunks. Do not say "I don't know" if the answer can be inferred from the material.
+Only say "I don't know" if the topic is genuinely absent from the context.
 
-Context:
+Reference material:
 {context}
 """
 
@@ -99,7 +112,7 @@ def generate(prompt, question):
 
 # ----------------------------
 def main():
-    question = "what are the different types of variances, explain usage variance?"
+    question = "explain how asset under construction is accounted for in SAP?"
     query_vec = get_embedding(question)
     chunks = retrieve(query_vec)
     chunks = rerank(question, chunks)
