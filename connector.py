@@ -22,12 +22,18 @@ DB_CONFIG = {
     "password": os.getenv("PG_PASSWORD"),
 }
 
-TABLE        = os.getenv("PG_TABLE")
-TOP_K        = int(os.getenv("TOP_K", "5"))
-OLLAMA_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
-OLLAMA_URL   = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-CHAT_MODEL   = os.getenv("CHAT_MODEL", "gpt-4o-mini")
-RERANK_MODEL = os.getenv("RERANK_MODEL", "ms-marco-MiniLM-L-12-v2")
+TABLE          = os.getenv("PG_TABLE")
+TOP_K          = int(os.getenv("TOP_K", "5"))
+OLLAMA_MODEL   = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
+OLLAMA_URL     = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+CHAT_MODEL     = os.getenv("CHAT_MODEL", "gpt-4o-mini")
+RERANK_MODEL   = os.getenv("RERANK_MODEL", "ms-marco-MiniLM-L-12-v2")
+# Cosine distance cutoff: chunks with distance > this are dropped before reranking.
+# Range 0–2 (lower = more similar). Start at 0.45; tighten toward 0.35 if P@5 is still low.
+DIST_THRESHOLD   = float(os.getenv("DIST_THRESHOLD", "0.45"))
+# Reranker score cutoff: chunks scoring below this are dropped after reranking.
+# ms-marco scores are unbounded; negative scores reliably indicate irrelevance.
+RERANK_THRESHOLD = float(os.getenv("RERANK_THRESHOLD", "0.0"))
 
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -46,7 +52,7 @@ def retrieve(query_vec):
     register_vector(conn)
     cur = conn.cursor()
     cur.execute("SET enable_seqscan = off;")
-    cur.execute("SET hnsw.ef_search = 50;")
+    cur.execute("SET hnsw.ef_search = 100;")
     # fetch extra rows to absorb duplicates after dedup
     fetch_k = TOP_K * 3
     cur.execute(f"""
@@ -59,9 +65,11 @@ def retrieve(query_vec):
     rows = cur.fetchall()
     cur.close()
     conn.close()
-    # deduplicate by content; build (content, metadata, score) tuples
+    # deduplicate by content; drop chunks beyond the distance threshold
     seen, results = set(), []
     for content, source, file_name, doc_category, chunk_index, score in rows:
+        if score > DIST_THRESHOLD:
+            continue  # too far from the query — discard before reranking
         if content not in seen:
             seen.add(content)
             metadata = {"source": source or file_name or "", "page": chunk_index, "category": doc_category}
@@ -74,11 +82,14 @@ def retrieve(query_vec):
 # RERANK
 # ----------------------------
 def rerank(query: str, chunks: list) -> list:
+    if not chunks:
+        return []
     ranker = Ranker(model_name=RERANK_MODEL)
     passages = [{"id": i, "text": chunk[0], "meta": chunk[1]} for i, chunk in enumerate(chunks)]
     request = RerankRequest(query=query, passages=passages)
     results = ranker.rerank(request)
-    return [(r["text"], r["meta"], r["score"]) for r in results]
+    # Drop chunks the reranker considers irrelevant (score below threshold)
+    return [(r["text"], r["meta"], r["score"]) for r in results if r["score"] >= RERANK_THRESHOLD]
 
 # ----------------------------
 # PROMPT
@@ -112,7 +123,7 @@ def generate(prompt, question):
 
 # ----------------------------
 def main():
-    question = "explain how asset under construction is accounted for in SAP?"
+    question = "What organizational units in fixed assets are relevant to the balance sheet in SAP Asset Accounting?"
     query_vec = get_embedding(question)
     chunks = retrieve(query_vec)
     chunks = rerank(question, chunks)
